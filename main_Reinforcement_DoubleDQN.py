@@ -38,8 +38,8 @@ class Qnetwork():
     def __init__(self,h_size):
         #The network recieves a frame from the game, flattened into an array.
         #It then resizes it and processes it through four convolutional layers.
-        self.scalarInput =  tf.placeholder(shape=[None,21168],dtype=tf.float32)
-        self.imageIn = tf.reshape(self.scalarInput,shape=[-1,84,84,3])
+        self.scalarInput =  tf.placeholder(shape=[None,21168*4],dtype=tf.float32)
+        self.imageIn = tf.reshape(self.scalarInput,shape=[-1,84*4,84*4,3])
         self.conv1 = slim.conv2d( \
             inputs=self.imageIn,num_outputs=32,kernel_size=[8,8],stride=[4,4],padding='VALID', biases_initializer=None)
         self.conv2 = slim.conv2d( \
@@ -90,7 +90,7 @@ class experience_buffer():
         return np.reshape(np.array(random.sample(self.buffer,size)),[size,5])
 
 def processState(states):
-    return np.reshape(states,[21168])
+    return np.reshape(states,[21168*4])
 
 def updateTargetGraph(tfVars,tau):
     total_vars = len(tfVars)
@@ -205,8 +205,16 @@ def sample_environment():
     screen2 = cv2.resize(screen2, (WIDTH,HEIGHT))
     return screen,screen2
 
+#Create a blank "short term" memory buffer.
+next = np.zeros((HEIGHT, WIDTH*4,3), np.uint8)
+
+
+
+
 with tf.Session() as sess:
     sess.run(init)
+    
+    
     for i in list(range(5))[::-1]:
         print(i+1)
         time.sleep(1)
@@ -215,11 +223,20 @@ with tf.Session() as sess:
         ckpt = tf.train.get_checkpoint_state(path)
         saver.restore(sess,ckpt.model_checkpoint_path)
     for i in range(num_episodes):
+        #Create a blank "short term" memory buffer.
+        next = np.zeros((HEIGHT, WIDTH*4,3), np.uint8)
+        
         episodeBuffer = experience_buffer()
         #Reset environment and get first new observation
         Reset_Mario()
         [s,compare] = sample_environment()
-        s = processState(s)
+        
+        nextp = next[:HEIGHT,:WIDTH*3,:3]
+        next[:HEIGHT,WIDTH:WIDTH*4,:3] = nextp
+        next[:HEIGHT, :WIDTH,:3] = s
+        
+        s = processState(next)
+        
         d = False
         rAll = 0
         j = 0
@@ -246,6 +263,10 @@ with tf.Session() as sess:
             
             #Get new state and reward from environment
             [s1,compare] = sample_environment()
+            nextp = next[:HEIGHT,:WIDTH*3,:3]
+            next[:HEIGHT,WIDTH:WIDTH*4,:3] = nextp
+            next[:HEIGHT, :WIDTH,:3] = s1
+            
             comparenew = np.array_split(compare[21:],[55,2],axis = 1)
             #opencv recognize 
             if (comparenew[0] == test[0]).all():
@@ -261,7 +282,7 @@ with tf.Session() as sess:
             else:
                 r = 0
             
-            s1 = processState(s1)
+            s1 = processState(next)
             dist = np.linalg.norm(s-s1)/1000
             
             r = r + dist
@@ -274,7 +295,7 @@ with tf.Session() as sess:
             print ("reward" ,r, " countdown ",countdown_counter)
             
             
-            s1 = processState(s1)
+            #s1 = processState(s1)
             total_steps += 1
             episodeBuffer.add(np.reshape(np.array([s,a,r,s1,d]),[1,5])) #Save the experience to our episode buffer.
             
