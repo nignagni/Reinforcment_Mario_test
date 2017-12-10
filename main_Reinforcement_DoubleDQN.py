@@ -39,9 +39,9 @@ class Qnetwork():
         #The network recieves a frame from the game, flattened into an array.
         #It then resizes it and processes it through four convolutional layers.
         self.scalarInput =  tf.placeholder(shape=[None,21168*4],dtype=tf.float32)
-        self.imageIn = tf.reshape(self.scalarInput,shape=[-1,84*4,84*4,3])
+        self.imageIn = tf.reshape(self.scalarInput,shape=[-1,84*4,84,3])
         self.conv1 = slim.conv2d( \
-            inputs=self.imageIn,num_outputs=32,kernel_size=[8,8],stride=[4,4],padding='VALID', biases_initializer=None)
+            inputs=self.imageIn,num_outputs=32,kernel_size=[8,8],stride=[16,4],padding='VALID', biases_initializer=None)
         self.conv2 = slim.conv2d( \
             inputs=self.conv1,num_outputs=64,kernel_size=[4,4],stride=[2,2],padding='VALID', biases_initializer=None)
         self.conv3 = slim.conv2d( \
@@ -77,7 +77,7 @@ class Qnetwork():
 
 #Also directly copied from awjuliani       
 class experience_buffer():
-    def __init__(self, buffer_size = 5000):
+    def __init__(self, buffer_size = 20000):
         self.buffer = []
         self.buffer_size = buffer_size
     
@@ -90,6 +90,7 @@ class experience_buffer():
         return np.reshape(np.array(random.sample(self.buffer,size)),[size,5])
 
 def processState(states):
+    #states = cv2.resize(states, (84,84))
     return np.reshape(states,[21168*4])
 
 def updateTargetGraph(tfVars,tau):
@@ -104,16 +105,16 @@ def updateTarget(op_holder,sess):
         sess.run(op)
         
 batch_size = 32 #How many experiences to use for each training step.
-update_freq = 4 #How often to perform a training step.
-y = .5 #Discount factor on the target Q-values
+update_freq = 8 #How often to perform a training step.
+y = .8 #Discount factor on the target Q-values
 startE = 1 #Starting chance of random action
-endE = 0.1 #Final chance of random action
-annealing_steps = 5000#How many steps of training to reduce startE to endE.
+endE = 0.05 #Final chance of random action
+annealing_steps = 100000#How many steps of training to reduce startE to endE.
 num_episodes = 3000 #How many episodes of game environment to train network with.
 pre_train_steps = 250 #How many steps of random actions before training begins.
-countdown = 240 #number of steps before large negative reward is encured!
+countdown = 540 #number of steps before large negative reward is encured!
 
-max_epLength = 250 #The max allowed length of our episode.
+max_epLength = 500 #The max allowed length of our episode.
 load_model = False #Whether to load a saved model.
 path = "./dqn" #The path to save our model to.
 h_size = 512 #The size of the final convolutional layer before splitting it into Advantage and Value streams.
@@ -199,14 +200,14 @@ def Pick_action(a):
         back()
 
 def sample_environment():
-    screen = grab_screen(region=(80,80,500,500))
+    screen = grab_screen(region=(0,150,900,900))
     screen2 = cv2.cvtColor(screen, cv2.COLOR_BGR2GRAY)
     screen = cv2.resize(screen, (84,84))
     screen2 = cv2.resize(screen2, (WIDTH,HEIGHT))
     return screen,screen2
 
 #Create a blank "short term" memory buffer.
-next = np.zeros((HEIGHT, WIDTH*4,3), np.uint8)
+#next = np.zeros((84, 84*4,3), np.uint8)
 
 
 
@@ -224,18 +225,17 @@ with tf.Session() as sess:
         saver.restore(sess,ckpt.model_checkpoint_path)
     for i in range(num_episodes):
         #Create a blank "short term" memory buffer.
-        next = np.zeros((HEIGHT, WIDTH*4,3), np.uint8)
-        
+        s_memory = np.zeros((84, 84*4,3), np.uint8)
+        print('Starting anew....')
         episodeBuffer = experience_buffer()
         #Reset environment and get first new observation
         Reset_Mario()
-        [s,compare] = sample_environment()
+        [state0,compare] = sample_environment()
         
-        nextp = next[:HEIGHT,:WIDTH*3,:3]
-        next[:HEIGHT,WIDTH:WIDTH*4,:3] = nextp
-        next[:HEIGHT, :WIDTH,:3] = s
+        s_split = np.split(s_memory,4,axis=1)
+        s_memory = np.concatenate((s_split[0], s_split[1],s_split[2],state0),axis = 0)
         
-        s = processState(next)
+        s = processState(s_memory)
         
         d = False
         rAll = 0
@@ -256,16 +256,16 @@ with tf.Session() as sess:
             print('Just a test', a)
             
             Pick_action(a)
-            time.sleep(.2)
+            time.sleep(.1)
             
             #s1,r,d = env.step(a)
             #get states, rewards and quitting
             
             #Get new state and reward from environment
-            [s1,compare] = sample_environment()
-            nextp = next[:HEIGHT,:WIDTH*3,:3]
-            next[:HEIGHT,WIDTH:WIDTH*4,:3] = nextp
-            next[:HEIGHT, :WIDTH,:3] = s1
+            [state1,compare] = sample_environment()
+            s_split = np.split(s_memory,4,axis=0)
+            s1_memory = np.concatenate((s_split[1], s_split[2],s_split[3],state1),axis = 0)
+
             
             comparenew = np.array_split(compare[21:],[55,2],axis = 1)
             #opencv recognize 
@@ -282,8 +282,8 @@ with tf.Session() as sess:
             else:
                 r = 0
             
-            s1 = processState(next)
-            dist = np.linalg.norm(s-s1)/1000
+            s1 = processState(s1_memory)
+            dist = np.linalg.norm(state0-state1)/1000
             
             r = r + dist
             if (r < 3 and r>=0):
@@ -292,10 +292,12 @@ with tf.Session() as sess:
             if (countdown_counter >= countdown):
                 r = -100
             
-            print ("reward" ,r, " countdown ",countdown_counter)
+           
             
             
-            #s1 = processState(s1)
+            s1 = processState(s1_memory)
+            
+            print ("reward" ,r, " countdown ",countdown_counter, "Are they equal?",np.array_equal(s_memory,s1_memory))
             total_steps += 1
             episodeBuffer.add(np.reshape(np.array([s,a,r,s1,d]),[1,5])) #Save the experience to our episode buffer.
             
@@ -320,6 +322,8 @@ with tf.Session() as sess:
                     updateTarget(targetOps,sess) #Update the target network toward the primary network.
             rAll += r
             s = s1
+            state0 = state1
+            s_memory = s1_memory
             
             if d == True:
 
